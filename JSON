@@ -1,0 +1,10 @@
+{
+  "bots": [
+    "bot_user_1",
+    "bot_user_2",
+    "bot_user_3",
+    "bot_user_4",
+    "bot_user_5"
+    // Ajoutez autant de comptes bots que nécessaire
+  ]
+}
