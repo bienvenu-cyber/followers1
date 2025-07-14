@@ -1,2 +1,5 @@
-instaloader
-instabot
+requests
+selenium
+webdriver-manager
+logging
+beautifulsoup4
