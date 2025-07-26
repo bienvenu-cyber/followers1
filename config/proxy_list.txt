@@ -1,0 +1,11 @@
+# Liste de proxies publics pour tests
+# Format: ip:port:username:password (username et password optionnels)
+# Attention: Ces proxies sont pour tests uniquement
+
+# Proxies HTTP publics (peuvent ne pas fonctionner)
+# 8.210.83.33:80
+# 47.74.152.29:8888
+# 103.127.1.130:80
+
+# Pour l'instant, nous utilisons une connexion directe (sans proxy)
+# Ajoutez vos propres proxies ici si nécessaire
