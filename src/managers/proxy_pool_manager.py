@@ -70,6 +70,11 @@ class ProxyPoolManager(ResourceManager):
         
         # Load proxies from configuration
         from ..core.config import config_manager
+        
+        # Ensure config is loaded
+        if not config_manager.config.proxies:
+            await config_manager.initialize()
+        
         config = config_manager.get_config()
         
         if hasattr(config, "proxies") and config.proxies:
@@ -85,8 +90,8 @@ class ProxyPoolManager(ResourceManager):
             
             logger.info(f"Loaded {len(self.proxies)} proxies from configuration")
             
-            # Validate proxies
-            await self.validate_all_proxies()
+            # Skip validation for now - proxies will be tested on use
+            # await self.validate_all_proxies()
             
             return True
         else:

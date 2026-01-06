@@ -2,6 +2,8 @@
   "creation_interval": 300,
   "max_concurrent_creations": 1,
   "retry_attempts": 3,
+  "capsolver_api_key": "",
+  "wit_api_keys": ["OH5B64ZLPSFUNLKL4LDBKWJTNWV4TDOQ"],
   "proxy_rotation_frequency": 10,
   "email_service_timeout": 120,
   "human_behavior_variance": 0.3,

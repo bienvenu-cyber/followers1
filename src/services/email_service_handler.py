@@ -10,6 +10,8 @@ import time
 import asyncio
 import aiohttp
 import random
+import string
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -39,42 +41,36 @@ class EmailServiceHandler:
     def __init__(self):
         """Initialize the email service handler."""
         self.email_services = {
-            "temp-mail": self._temp_mail_service,
-            "10minutemail": self._ten_minute_mail_service,
-            "guerrillamail": self._guerrilla_mail_service
+            "guerrillamail": self._guerrilla_mail_service,
+            "1secmail": self._one_sec_mail_service,
+            "mail-tm": self._mail_tm_service,
         }
         self.current_service = None
+        self.current_account = None
         self.service_priority = []
         self.failed_services = set()
         self.session = None
+        self.mail_tm_token = None
+        self.mail_tm_account_id = None
     
     async def initialize(self) -> bool:
         """Initialize the email service handler."""
         logger.info("Initializing email service handler...")
         
-        # Load configuration
-        from ..core.config import config_manager
-        config = config_manager.get_config()
-        
-        # Set service priority from configuration
-        if hasattr(config, 'email_services') and config.email_services:
-            self.service_priority = sorted(
-                config.email_services,
-                key=lambda x: x.get('priority', 999)
-            )
-        else:
-            # Default services
-            self.service_priority = [
-                {"name": "temp-mail", "priority": 1},
-                {"name": "10minutemail", "priority": 2},
-                {"name": "guerrillamail", "priority": 3}
-            ]
+        # Default services priority
+        self.service_priority = [
+            {"name": "guerrillamail", "priority": 1},
+            {"name": "1secmail", "priority": 2},
+            {"name": "mail-tm", "priority": 3},
+        ]
         
         # Create HTTP session
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
             headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
             }
         )
         
@@ -86,155 +82,305 @@ class EmailServiceHandler:
         if self.session:
             await self.session.close()
     
-    async def create_email(self) -> Optional[EmailAccount]:
+    async def create_email(self) -> Optional[Dict[str, Any]]:
         """
         Create a temporary email account.
         
         Returns:
-            EmailAccount if successful, None otherwise
+            Dict with email_address and metadata if successful, None otherwise
         """
         for service_config in self.service_priority:
             service_name = service_config.get('name')
             
             if service_name in self.failed_services:
-                logger.warning(f"Skipping failed service: {service_name}")
                 continue
             
             if service_name not in self.email_services:
-                logger.warning(f"Unknown email service: {service_name}")
                 continue
             
             try:
-                logger.info(f"Attempting to create email with service: {service_name}")
-                email_account = await self.email_services[service_name]()
+                logger.info(f"Creating email with: {service_name}")
+                result = await self.email_services[service_name](action="create")
                 
-                if email_account:
-                    logger.info(f"Email created successfully: {email_account.email_address}")
+                if result and result.get('email_address'):
+                    logger.info(f"✅ Email created: {result['email_address']}")
                     self.current_service = service_name
-                    return email_account
+                    self.current_account = result
+                    return result
                 
             except Exception as e:
-                logger.error(f"Error creating email with {service_name}: {e}")
+                logger.error(f"Error with {service_name}: {e}")
                 self.failed_services.add(service_name)
         
-        logger.error("Failed to create email with all available services")
+        logger.error("All email services failed")
         return None
     
-    async def get_messages(self, email_account: EmailAccount) -> List[Dict[str, Any]]:
-        """
-        Get messages for an email account.
-        
-        Args:
-            email_account: Email account to check
-            
-        Returns:
-            List of messages
-        """
-        if not self.current_service or self.current_service not in self.email_services:
-            logger.error("No active email service")
+    async def get_messages(self, email_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get messages for an email account."""
+        if not self.current_service:
             return []
         
         try:
-            service_method = self.email_services[self.current_service]
-            return await service_method(email_account, action="get_messages")
+            return await self.email_services[self.current_service](action="get_messages", email_data=email_data)
         except Exception as e:
             logger.error(f"Error getting messages: {e}")
             return []
     
-    async def _temp_mail_service(self, email_account: Optional[EmailAccount] = None, action: str = "create") -> Any:
-        """
-        Temp-mail.org service implementation.
+    async def get_verification_code(self, email_data: Dict[str, Any], timeout: int = 120) -> Optional[str]:
+        """Wait for and extract Instagram verification code."""
+        start_time = time.time()
         
-        Args:
-            email_account: Email account (for get_messages action)
-            action: Action to perform ("create" or "get_messages")
+        while time.time() - start_time < timeout:
+            messages = await self.get_messages(email_data)
             
-        Returns:
-            EmailAccount for create action, List of messages for get_messages action
+            for msg in messages:
+                # Check subject for Instagram code
+                subject = msg.get('subject', '')
+                if 'Instagram' in subject or 'code' in subject.lower():
+                    # Extract 6-digit code from subject
+                    code_match = re.search(r'\b(\d{6})\b', subject)
+                    if code_match:
+                        code = code_match.group(1)
+                        logger.info(f"✅ Verification code found: {code}")
+                        return code
+                    
+                    # Try intro/body
+                    intro = msg.get('intro', '') or msg.get('body', '')
+                    code_match = re.search(r'\b(\d{6})\b', intro)
+                    if code_match:
+                        code = code_match.group(1)
+                        logger.info(f"✅ Verification code found: {code}")
+                        return code
+            
+            await asyncio.sleep(5)
+        
+        logger.warning("Verification code not received in time")
+        return None
+    
+    async def _mail_tm_service(self, action: str = "create", email_data: Dict = None) -> Any:
         """
+        Mail.tm API - REAL working implementation.
+        """
+        base_url = "https://api.mail.tm"
+        
         if action == "create":
             try:
-                # Generate a simple temporary email for demo
-                username = f"user{random.randint(1000, 9999)}{int(time.time())}"
-                email_address = f"{username}@temp-mail.org"
+                # 1. Get available domains
+                async with self.session.get(f"{base_url}/domains") as resp:
+                    if resp.status != 200:
+                        logger.error(f"mail.tm domains error: {resp.status}")
+                        return None
+                    domains_data = await resp.json()
                 
-                return EmailAccount(
-                    email_address=email_address,
-                    provider="temp-mail"
-                )
-            
+                # Handle both list and dict response
+                if isinstance(domains_data, list):
+                    domains = domains_data
+                else:
+                    domains = domains_data.get('hydra:member', [])
+                if not domains:
+                    logger.error("No mail.tm domains available")
+                    return None
+                
+                domain = domains[0]['domain']
+                
+                # 2. Generate random username
+                username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                email_address = f"{username}@{domain}"
+                password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+                
+                # 3. Create account
+                create_data = {
+                    "address": email_address,
+                    "password": password
+                }
+                
+                async with self.session.post(f"{base_url}/accounts", json=create_data) as resp:
+                    if resp.status not in [200, 201]:
+                        error_text = await resp.text()
+                        logger.error(f"mail.tm create error: {resp.status} - {error_text}")
+                        return None
+                    account_data = await resp.json()
+                
+                account_id = account_data.get('id')
+                
+                # 4. Get auth token
+                auth_data = {
+                    "address": email_address,
+                    "password": password
+                }
+                
+                async with self.session.post(f"{base_url}/token", json=auth_data) as resp:
+                    if resp.status != 200:
+                        logger.error(f"mail.tm auth error: {resp.status}")
+                        return None
+                    token_data = await resp.json()
+                
+                token = token_data.get('token')
+                
+                # Store for later use
+                self.mail_tm_token = token
+                self.mail_tm_account_id = account_id
+                
+                return {
+                    'email_address': email_address,
+                    'password': password,
+                    'token': token,
+                    'account_id': account_id,
+                    'provider': 'mail-tm'
+                }
+                
             except Exception as e:
-                logger.error(f"Temp-mail create error: {e}")
+                logger.error(f"mail.tm error: {e}")
                 return None
         
         elif action == "get_messages":
-            # For demo purposes, return empty list
-            return []
+            try:
+                token = None
+                if email_data:
+                    if isinstance(email_data, dict):
+                        token = email_data.get('token')
+                    elif hasattr(email_data, 'token'):
+                        token = email_data.token
+                
+                if not token:
+                    token = self.mail_tm_token
+                
+                if not token:
+                    return []
+                
+                headers = {'Authorization': f'Bearer {token}'}
+                
+                async with self.session.get(f"{base_url}/messages", headers=headers) as resp:
+                    if resp.status != 200:
+                        return []
+                    data = await resp.json()
+                
+                # Handle both list and dict response
+                if isinstance(data, list):
+                    messages = data
+                else:
+                    messages = data.get('hydra:member', [])
+                
+                return messages
+                
+            except Exception as e:
+                logger.error(f"mail.tm get_messages error: {e}")
+                return []
         
         return None
     
-    async def _ten_minute_mail_service(self, email_account: Optional[EmailAccount] = None, action: str = "create") -> Any:
+    async def _one_sec_mail_service(self, action: str = "create", email_data: Dict = None) -> Any:
         """
-        10minutemail.com service implementation.
+        1secmail.com API - backup service.
+        """
+        # Try alternative endpoints
+        endpoints = [
+            "https://www.1secmail.com/api/v1/",
+            "https://1secmail.com/api/v1/",
+        ]
         
-        Args:
-            email_account: Email account (for get_messages action)
-            action: Action to perform ("create" or "get_messages")
-            
-        Returns:
-            EmailAccount for create action, List of messages for get_messages action
-        """
         if action == "create":
             try:
-                # Generate a simple temporary email
-                username = f"user{random.randint(1000, 9999)}{int(time.time())}"
-                email_address = f"{username}@10minutemail.com"
+                # Generate random email with known domains
+                domains = ['1secmail.com', '1secmail.org', '1secmail.net']
+                username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+                domain = random.choice(domains)
+                email_address = f"{username}@{domain}"
                 
-                return EmailAccount(
-                    email_address=email_address,
-                    provider="10minutemail",
-                    expires_at=datetime.now() + timedelta(minutes=10)
-                )
-            
+                return {
+                    'email_address': email_address,
+                    'login': username,
+                    'domain': domain,
+                    'provider': '1secmail'
+                }
+                
             except Exception as e:
-                logger.error(f"10minutemail create error: {e}")
+                logger.error(f"1secmail error: {e}")
                 return None
         
         elif action == "get_messages":
-            # For demo purposes, return empty list
-            return []
+            try:
+                email = email_data.get('email_address', '') if isinstance(email_data, dict) else ''
+                if '@' not in email:
+                    return []
+                
+                login, domain = email.split('@')
+                
+                for base_url in endpoints:
+                    try:
+                        async with self.session.get(
+                            f"{base_url}?action=getMessages&login={login}&domain={domain}",
+                            timeout=aiohttp.ClientTimeout(total=10)
+                        ) as resp:
+                            if resp.status == 200:
+                                messages = await resp.json()
+                                
+                                result = []
+                                for msg in messages[:5]:
+                                    msg_id = msg.get('id')
+                                    async with self.session.get(
+                                        f"{base_url}?action=readMessage&login={login}&domain={domain}&id={msg_id}"
+                                    ) as msg_resp:
+                                        if msg_resp.status == 200:
+                                            full_msg = await msg_resp.json()
+                                            result.append({
+                                                'subject': full_msg.get('subject', ''),
+                                                'body': full_msg.get('body', ''),
+                                                'from': full_msg.get('from', '')
+                                            })
+                                
+                                return result
+                    except:
+                        continue
+                
+                return []
+                
+            except Exception as e:
+                logger.error(f"1secmail get_messages error: {e}")
+                return []
         
         return None
     
-    async def _guerrilla_mail_service(self, email_account: Optional[EmailAccount] = None, action: str = "create") -> Any:
-        """
-        Guerrillamail.com service implementation.
+    async def _guerrilla_mail_service(self, action: str = "create", email_data: Dict = None) -> Any:
+        """Guerrilla Mail API."""
+        base_url = "https://api.guerrillamail.com/ajax.php"
         
-        Args:
-            email_account: Email account (for get_messages action)
-            action: Action to perform ("create" or "get_messages")
-            
-        Returns:
-            EmailAccount for create action, List of messages for get_messages action
-        """
         if action == "create":
             try:
-                # Generate a simple temporary email for demo
-                username = f"user{random.randint(1000, 9999)}{int(time.time())}"
-                email_address = f"{username}@guerrillamail.com"
-                
-                return EmailAccount(
-                    email_address=email_address,
-                    provider="guerrillamail"
-                )
-            
+                params = {'f': 'get_email_address'}
+                async with self.session.get(base_url, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        email = data.get('email_addr')
+                        sid = data.get('sid_token')
+                        
+                        if email:
+                            return {
+                                'email_address': email,
+                                'sid_token': sid,
+                                'provider': 'guerrillamail'
+                            }
+                return None
             except Exception as e:
-                logger.error(f"Guerrillamail create error: {e}")
+                logger.error(f"Guerrilla mail error: {e}")
                 return None
         
         elif action == "get_messages":
-            # For demo purposes, return empty list
-            return []
+            try:
+                sid = email_data.get('sid_token') if isinstance(email_data, dict) else None
+                if not sid:
+                    return []
+                
+                params = {'f': 'get_email_list', 'offset': 0, 'sid_token': sid}
+                async with self.session.get(base_url, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        messages = data.get('list', [])
+                        return [{'subject': m.get('mail_subject', ''), 'body': m.get('mail_body', '')} for m in messages]
+                return []
+            except Exception as e:
+                logger.error(f"Guerrilla get_messages error: {e}")
+                return []
         
         return None
     

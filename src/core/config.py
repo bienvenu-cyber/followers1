@@ -133,6 +133,8 @@ class ConfigManager:
             "creation_interval": {"type": "integer", "minimum": 60, "maximum": 3600},
             "max_concurrent_creations": {"type": "integer", "minimum": 1, "maximum": 10},
             "retry_attempts": {"type": "integer", "minimum": 1, "maximum": 10},
+            "capsolver_api_key": {"type": "string"},
+            "wit_api_keys": {"type": "array", "items": {"type": "string"}},
             "proxy_rotation_frequency": {"type": "integer", "minimum": 1, "maximum": 100},
             "email_service_timeout": {"type": "integer", "minimum": 30, "maximum": 300},
             "human_behavior_variance": {"type": "number", "minimum": 0.0, "maximum": 1.0},

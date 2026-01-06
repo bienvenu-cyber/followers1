@@ -162,10 +162,11 @@ class BrowserManager:
             BrowserInstance if successful, None otherwise
         """
         try:
-            # Get proxy and user agent if not provided
+            # Get proxy - try proxy_config first, then proxy_manager
             if proxy_config is None:
                 proxy_config = self.proxy_manager.get_proxy()
             
+            # Get user agent
             if user_agent is None:
                 user_agent_info = self.user_agent_rotator.get_user_agent()
                 user_agent = user_agent_info.user_agent if user_agent_info else None
@@ -191,19 +192,15 @@ class BrowserManager:
             # Set window size
             driver.set_window_size(*self.config.window_size)
             
-            # Create browser instance
-            instance = BrowserInstance(
+            # Create browser instance - return driver directly for compatibility
+            self.browser_instances.append(BrowserInstance(
                 driver=driver,
                 proxy_config=proxy_config,
-                user_agent=user_agent,
-                created_at=datetime.now(),
-                last_used=datetime.now()
-            )
+                user_agent=user_agent
+            ))
             
-            self.browser_instances.append(instance)
-            
-            logger.info(f"Browser instance created successfully with {self.config.browser_type}")
-            return instance
+            logger.info(f"Browser instance created with {self.config.browser_type}")
+            return self.browser_instances[-1]
             
         except Exception as e:
             logger.error(f"Failed to create browser instance: {e}")
@@ -214,41 +211,57 @@ class BrowserManager:
         proxy_config: Optional[ProxyConfig], 
         user_agent: Optional[str]
     ) -> Optional[webdriver.Chrome]:
-        """Create Chrome driver instance."""
+        """Create Chrome driver instance with strong anti-detection."""
         try:
             options = ChromeOptions()
             
-            # Basic options
-            if self.config.headless:
-                options.add_argument("--headless")
-            
-            options.add_argument("--no-sandbox")
+            # Anti-detection options
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--disable-infobars")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-browser-side-navigation")
             options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-default-apps")
+            options.add_argument("--disable-popup-blocking")
+            options.add_argument("--ignore-certificate-errors")
             options.add_argument("--disable-web-security")
             options.add_argument("--allow-running-insecure-content")
-            options.add_argument("--disable-blink-features=AutomationControlled")
             
-            # Disable images if configured
-            if self.config.disable_images:
-                prefs = {"profile.managed_default_content_settings.images": 2}
-                options.add_experimental_option("prefs", prefs)
+            # Headless mode
+            if self.config.headless:
+                options.add_argument("--headless=new")
             
-            # Disable extensions if configured
-            if self.config.disable_extensions:
-                options.add_argument("--disable-extensions")
+            # Window size
+            options.add_argument(f"--window-size={self.config.window_size[0]},{self.config.window_size[1]}")
             
-            # Set user agent
+            # User agent
             if user_agent:
                 options.add_argument(f"--user-agent={user_agent}")
+            else:
+                options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             
-            # Set proxy
+            # Proxy
             if proxy_config:
-                options.add_argument(f"--proxy-server={proxy_config.url}")
+                if hasattr(proxy_config, 'url'):
+                    options.add_argument(f"--proxy-server={proxy_config.url}")
+                elif isinstance(proxy_config, dict):
+                    options.add_argument(f"--proxy-server={proxy_config.get('url', '')}")
             
-            # Hide automation indicators
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            # Disable automation flags
+            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
             options.add_experimental_option('useAutomationExtension', False)
+            
+            # Disable images for speed
+            if self.config.disable_images:
+                prefs = {
+                    "profile.managed_default_content_settings.images": 2,
+                    "profile.default_content_setting_values.notifications": 2,
+                    "credentials_enable_service": False,
+                    "profile.password_manager_enabled": False
+                }
+                options.add_experimental_option("prefs", prefs)
             
             # Create service
             service = None
@@ -258,8 +271,17 @@ class BrowserManager:
             # Create driver
             driver = webdriver.Chrome(service=service, options=options)
             
-            # Execute script to hide webdriver property
-            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            # Anti-detection scripts
+            driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                "userAgent": driver.execute_script("return navigator.userAgent").replace("HeadlessChrome", "Chrome")
+            })
+            
+            driver.execute_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                window.chrome = {runtime: {}};
+            """)
             
             return driver
             
